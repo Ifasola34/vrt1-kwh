@@ -74,6 +74,21 @@ class KwhMeasurement:
     nonce: str = ""
 
     def __post_init__(self) -> None:
+        # Validate physical-sense invariants. The library is the receipts
+        # layer (fraud resistance is layered above) but it should still
+        # refuse to sign garbage at construction time:
+        #   - window_end >= window_start (a window cannot end before it begins)
+        #   - window_start >= 0 (no pre-epoch measurements)
+        #   - kwh >= 0 (no negative energy consumption)
+        if self.window_end < self.window_start:
+            raise ValueError(
+                f"window_end ({self.window_end}) must be >= "
+                f"window_start ({self.window_start})"
+            )
+        if self.window_start < 0:
+            raise ValueError(f"window_start must be >= 0, got {self.window_start}")
+        if self.kwh < 0:
+            raise ValueError(f"kwh must be >= 0, got {self.kwh}")
         # Round kwh at construction so the in-memory dataclass field
         # and the canonical payload always agree. Without this the
         # aggregator can sum unrounded values that differ from the

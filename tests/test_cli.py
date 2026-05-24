@@ -152,7 +152,14 @@ def test_aggregate_surfaces_overlap_fraud(tmp_path: Path):
     assert "OVERLAP FRAUD" in r.output
 
 
-def test_aggregate_exits_3_on_invalid_signature(tmp_path: Path):
+def test_aggregate_exits_4_on_invalid_signature(tmp_path: Path):
+    """Round-3 fix: exit code is now a BITMASK.
+      2 = overlap fraud
+      4 = invalid sigs present
+      6 = both
+    Previously fraud took precedence and silently swallowed the
+    invalid-sig signal (operators watching only for exit=3 missed it).
+    """
     k = OracleKey.generate()
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -164,8 +171,30 @@ def test_aggregate_exits_3_on_invalid_signature(tmp_path: Path):
     (corpus / "02_bad.json").write_text(json.dumps(bad_body))
     runner = CliRunner()
     r = runner.invoke(cli, ["aggregate", "--corpus", str(corpus)])
-    # Exit 3 = invalid sigs present (no overlap fraud here).
-    assert r.exit_code == 3
+    # Exit 4 = invalid sigs present (no overlap fraud here).
+    assert r.exit_code == 4
+
+
+def test_aggregate_exits_6_when_both_fraud_and_invalid_sigs(tmp_path: Path):
+    """Bitmask: 2 (fraud) | 4 (invalid sigs) = 6. CI rules that watch
+    `if rc & 4` or `if rc & 2` both fire correctly. Previously only
+    fraud would have surfaced and the invalid-sig signal was lost."""
+    k = OracleKey.generate()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    # Two overlapping valid measurements = fraud (bit 2).
+    (corpus / "01.json").write_text(_sm(k, kwh=0.001, start=100, end=250).to_json())
+    (corpus / "02.json").write_text(_sm(k, kwh=0.001, start=200, end=400).to_json())
+    # Plus an invalid-sig measurement = bit 4.
+    bad = _sm(k, kwh=0.002, start=500, end=600)
+    bad_body = json.loads(bad.to_json())
+    bad_body["measurement"]["kwh"] = 999.0
+    (corpus / "03_bad.json").write_text(json.dumps(bad_body))
+    runner = CliRunner()
+    r = runner.invoke(cli, ["aggregate", "--corpus", str(corpus)])
+    assert r.exit_code == 6
+    assert r.exit_code & 2  # fraud bit set
+    assert r.exit_code & 4  # invalid-sig bit set
 
 
 def test_aggregate_errors_on_empty_dir(tmp_path: Path):

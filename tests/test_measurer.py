@@ -103,6 +103,59 @@ def test_rapl_corrects_for_wrap_with_known_bound(tmp_path: Path):
     assert sample.kwh == pytest.approx(expected_kwh)
 
 
+def test_rapl_corrects_for_multiple_wraps_in_one_window(tmp_path: Path):
+    """Round-2 changed the wrap correction from `if` to `while` so older
+    CPUs with small max ranges can correct for multiple wraps in a long
+    or high-draw window. A regression to `if` would leave the corrected
+    delta still negative (and the round-3 __post_init__ guard would
+    reject the resulting negative kwh) — this test catches that.
+
+    Inputs chosen so a single `+max_uj` correction is INSUFFICIENT:
+      start=100, end=10, max=50 → raw delta=-90
+      after one +50: -40 (still negative — `if`-only fix fails)
+      after two +50: +10  (loop fix succeeds)
+    """
+    rapl_dir = tmp_path / "rapl0"
+    rapl_dir.mkdir()
+    (rapl_dir / "energy_uj").write_text("0\n")
+    (rapl_dir / "max_energy_range_uj").write_text("50\n")
+
+    m = RaplMeasurer(rapl_path=rapl_dir)
+    reads = iter(["100", "10"])
+    m._read_uj = lambda: int(next(reads))
+    m._sleep = lambda secs: None
+
+    sample = m.measure(1.0)
+    # Expected: -90 + 2*50 = 10 uj
+    expected_kwh = (10 / 1_000_000) / 3_600_000
+    assert sample.kwh == pytest.approx(expected_kwh), (
+        "RaplMeasurer wrap-correction must LOOP, not just add max_uj once"
+    )
+
+
+def test_rapl_rejects_negative_max_uj_to_prevent_infinite_loop(tmp_path: Path):
+    """Round-3 fix: a malformed max_energy_range_uj containing a negative
+    value (malicious /sys overlay, kernel bug) used to cause an infinite
+    loop in the wrap-correction `while delta_uj < 0: delta_uj += max_uj`.
+    Now: the negative max is rejected at init and the wrap path falls
+    back to clamping delta to zero rather than spinning forever.
+    """
+    rapl_dir = tmp_path / "rapl0"
+    rapl_dir.mkdir()
+    (rapl_dir / "energy_uj").write_text("0\n")
+    (rapl_dir / "max_energy_range_uj").write_text("-100\n")
+
+    m = RaplMeasurer(rapl_path=rapl_dir)
+    # Init must have refused the negative max_uj.
+    assert m._max_uj is None
+    # And a wrapped read clamps to zero instead of hanging.
+    reads = iter(["100", "50"])  # negative delta, no bound to correct with
+    m._read_uj = lambda: int(next(reads))
+    m._sleep = lambda secs: None
+    sample = m.measure(1.0)
+    assert sample.kwh == 0.0
+
+
 def test_rapl_clamps_negative_delta_to_zero_without_bound(tmp_path: Path):
     rapl_dir = tmp_path / "rapl0"
     rapl_dir.mkdir()

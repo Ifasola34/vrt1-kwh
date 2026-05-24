@@ -319,21 +319,29 @@ def test_negative_kwh_clamped_to_zero_by_measurers():
     assert s.kwh == 0.0
 
 
-def test_window_end_before_start_signs_but_aggregator_finds_no_overlap():
-    """A device with a wildly wrong clock might produce window_end < start.
-    The signature still verifies (we sign whatever we're told), but the
-    overlap detector should not treat such garbage as overlapping any
-    sensible window."""
+def test_construction_rejects_window_end_before_start():
+    """Round-3 fix: KwhMeasurement.__post_init__ refuses to construct
+    a measurement where window_end < window_start. The library is the
+    receipts layer (fraud-resistance is layered above) but it should
+    still refuse to sign physically-impossible garbage at construction.
+    """
     a = OracleKey.generate()
-    weird = _sm(a, kwh=0.0, start=500, end=100)   # end < start, sig verifies
-    sensible = _sm(a, kwh=0.001, start=200, end=400)
-    assert weird.verify() is True
-    fraud = detect_overlap_fraud([weird, sensible])
-    # Weird's end (100) is < sensible's start (200) — no overlap reported.
-    # But weird's start (500) is > sensible's end (400) so no overlap there
-    # either. The detector should not crash on this nonsense; it should
-    # just produce zero overlap entries.
-    assert isinstance(fraud, list)
+    with pytest.raises(ValueError, match="window_end"):
+        _sm(a, kwh=0.0, start=500, end=100)
+
+
+def test_construction_rejects_negative_kwh():
+    """Negative kWh is physically impossible. Refuse at construction."""
+    a = OracleKey.generate()
+    with pytest.raises(ValueError, match="kwh must be >= 0"):
+        _sm(a, kwh=-0.001, start=100, end=200)
+
+
+def test_construction_rejects_negative_window_start():
+    """Pre-unix-epoch timestamps are physically impossible. Refuse."""
+    a = OracleKey.generate()
+    with pytest.raises(ValueError, match="window_start must be >= 0"):
+        _sm(a, kwh=0.001, start=-1, end=200)
 
 
 # ---------- corpus-loading attacks ---------------------------------

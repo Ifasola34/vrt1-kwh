@@ -146,12 +146,17 @@ class RaplMeasurer:
                 f"RAPL energy counter not found at {self.rapl_path / 'energy_uj'}; "
                 "this measurer requires Linux with Intel/AMD RAPL support"
             )
-        # Cache the wrap-around bound, if exposed.
+        # Cache the wrap-around bound, if exposed. Validate > 0 — a
+        # malformed /sys file (container bind-mount overlay, kernel
+        # bug, or signed/negative value) would otherwise cause an
+        # infinite loop in the wrap-correction below.
         bound_path = self.rapl_path / "max_energy_range_uj"
         self._max_uj: int | None = None
         if bound_path.exists():
             try:
-                self._max_uj = int(bound_path.read_text().strip())
+                parsed = int(bound_path.read_text().strip())
+                if parsed > 0:
+                    self._max_uj = parsed
             except (ValueError, OSError):
                 self._max_uj = None
         self._sleep: Callable[[float], None] = time.sleep
@@ -282,8 +287,13 @@ class SubprocessMeasurer:
             kwh = max(0.0, end_val - start_val)
         else:
             # Instantaneous rate (kW); multiply by hours in window.
-            start_ts = int(self._clock())
+            # Capture start_ts AFTER the _run() returns for the same
+            # reason the cumulative path does — otherwise two back-to-
+            # back instantaneous measurements where the subprocess takes
+            # non-trivial time can produce overlapping signed windows
+            # that trigger false-positive OverlapFraud.
             rate_kw = self._run()
+            start_ts = int(self._clock())
             self._sleep(duration_seconds)
             end_ts = int(self._clock())
             hours = duration_seconds / 3600

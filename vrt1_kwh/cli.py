@@ -224,13 +224,17 @@ def aggregate_cmd(corpus: str, device: str | None, min_gap_seconds: int) -> None
     t.add_column("device"); t.add_column("kwh"); t.add_column("count")
     t.add_column("invalid"); t.add_column("first"); t.add_column("last")
     for dev, dt in report.totals.items():
+        # Use explicit None checks (not truthiness) so a legitimate
+        # window_start of 0 (epoch) doesn't render as "-".
+        first = "-" if dt.first_window_start is None else str(dt.first_window_start)
+        last = "-" if dt.last_window_end is None else str(dt.last_window_end)
         t.add_row(
             dev[:16] + "…",
             f"{dt.total_kwh:.9f}",
             str(dt.measurement_count),
             str(dt.invalid_count) if dt.invalid_count else "-",
-            str(dt.first_window_start or "-"),
-            str(dt.last_window_end or "-"),
+            first,
+            last,
         )
     console.print(t)
 
@@ -254,13 +258,18 @@ def aggregate_cmd(corpus: str, device: str | None, min_gap_seconds: int) -> None
     else:
         console.print("[green]no overlap fraud detected[/green]")
 
-    # Exit non-zero on any finding worth gating CI/scripts on:
-    #   2 = overlap fraud detected (physical impossibility)
-    #   3 = invalid-signature measurements present
+    # Exit non-zero on any finding worth gating CI/scripts on. We use
+    # a BITMASK so both signals are observable: bit 1 (2) = overlap
+    # fraud, bit 2 (4) = invalid sigs present. Both together = 6.
+    # CI rules `if rc == 2`, `if rc == 4`, and `if rc & 2`/`if rc & 4`
+    # all work as expected.
+    exit_code = 0
     if report.overlaps:
-        sys.exit(2)
+        exit_code |= 2
     if any(dt.invalid_count > 0 for dt in report.totals.values()):
-        sys.exit(3)
+        exit_code |= 4
+    if exit_code:
+        sys.exit(exit_code)
 
 
 def main() -> None:
