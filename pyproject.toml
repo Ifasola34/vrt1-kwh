@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vrt1-kwh"
+version = "0.1.0"
+description = "Signed kWh (energy consumption) attestations for the VERITAS (VRT1) protocol. Devices measure their own power usage and emit cryptographically signed, peer-verifiable records anyone can aggregate. Substrate for proof-of-energy systems, mining attestation, IoT power telemetry, and agent compute receipts."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Ifasola34"},
+]
+keywords = ["bitcoin", "nostr", "attestation", "energy", "kwh", "veritas", "iot"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: System :: Hardware",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "veritas @ git+https://github.com/Ifasola34/veritas.git",
+    "click>=8.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+vrt1-kwh = "vrt1_kwh.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Ifasola34/vrt1-kwh"
+"VERITAS Protocol" = "https://github.com/Ifasola34/veritas"
+"Agent Actions"    = "https://github.com/Ifasola34/vrt1-agents"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
