@@ -111,7 +111,10 @@ class KwhOracle:
         """Tick repeatedly. Returns the number of measurements taken.
 
         Blocks for `interval_seconds` between ticks. Sleeps in 1-second
-        chunks so stop() can interrupt cleanly.
+        chunks so stop() can interrupt cleanly. The max-measurements
+        check runs BOTH before each tick AND immediately after, so a
+        run with --max-measurements 1 doesn't waste an interval sleeping
+        after the work is done.
         """
         taken = 0
         while not self._stop.is_set():
@@ -122,6 +125,12 @@ class KwhOracle:
                 break
             self.tick()
             taken += 1
+            # Short-circuit: don't sleep an interval after the final tick.
+            if (
+                self.config.max_measurements is not None
+                and taken >= self.config.max_measurements
+            ):
+                break
             # Sleep up to interval_seconds, breakable on stop.
             slept = 0
             while slept < self.config.interval_seconds and not self._stop.is_set():
@@ -134,8 +143,13 @@ class KwhOracle:
 
     def _persist(self, signed: SignedMeasurement) -> None:
         ts = signed.measurement.window_start
-        short = signed.id[:12]
-        fname = f"{ts:020d}_{short}.json"
+        # Use 32 hex chars (128 bits) of the id so two measurements
+        # with the same window_start but different content cannot
+        # collide on filename even in adversarial corpora. The id is
+        # deterministic, so identical content → identical filename →
+        # idempotent overwrite of an exact duplicate (correct).
+        long_id = signed.id[:32]
+        fname = f"{ts:020d}_{long_id}.json"
         path = self.config.data_dir / fname
         _atomic_write(path, signed.to_json())
 
@@ -150,19 +164,29 @@ def _atomic_write(path: Path, data: str) -> None:
     os.replace(tmp, path)
 
 
-def load_corpus(data_dir: Path) -> list[SignedMeasurement]:
+def load_corpus(
+    data_dir: Path,
+    *,
+    return_errors: bool = False,
+) -> "list[SignedMeasurement] | tuple[list[SignedMeasurement], list[tuple[Path, str]]]":
     """Load every signed measurement under `data_dir`, sorted by window_start.
 
-    Skips files that don't parse (torn writes, junk).
+    Files that don't parse are skipped. By default the function returns
+    only the loaded list — but pass `return_errors=True` and you get
+    `(measurements, errors)` where errors is a list of `(path, reason)`
+    tuples. Audit-grade callers should always use return_errors=True so
+    silent data loss can't mask a torn write or an attack.
     """
     out: list[SignedMeasurement] = []
+    errors: list[tuple[Path, str]] = []
     if not data_dir.exists():
-        return out
+        return (out, errors) if return_errors else out
     for p in sorted(data_dir.glob("*.json")):
         try:
             sm = SignedMeasurement.from_json(p.read_text())
-        except (json.JSONDecodeError, KeyError, ValueError, OSError):
+        except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
+            errors.append((p, f"{type(e).__name__}: {e}"))
             continue
         out.append(sm)
     out.sort(key=lambda s: s.measurement.window_start)
-    return out
+    return (out, errors) if return_errors else out

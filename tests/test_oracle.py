@@ -148,6 +148,25 @@ def test_load_corpus_skips_torn_json(tmp_path: Path):
     assert len(corpus) == 1  # only the good one
 
 
+def test_load_corpus_return_errors_surfaces_torn_files(tmp_path: Path):
+    """Round-2 fix: silent data loss is the wrong default for audit-grade
+    primitives. return_errors=True gives callers the per-file reason."""
+    k = OracleKey.generate()
+    oracle = KwhOracle(
+        k, StubMeasurer(kwh_per_second=0.001),
+        OracleConfig(data_dir=tmp_path / "data", interval_seconds=1, window_seconds=1),
+    )
+    oracle.tick()
+    (tmp_path / "data" / "torn.json").write_text('{"measurement": {"dev')
+    (tmp_path / "data" / "wrong-shape.json").write_text('{"hello": "world"}')
+
+    corpus, errors = load_corpus(tmp_path / "data", return_errors=True)
+    assert len(corpus) == 1
+    assert len(errors) == 2
+    error_names = sorted(p.name for p, _ in errors)
+    assert error_names == ["torn.json", "wrong-shape.json"]
+
+
 def test_oracle_on_sign_callback_invoked(tmp_path: Path):
     k = OracleKey.generate()
     captured = []

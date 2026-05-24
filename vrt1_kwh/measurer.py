@@ -171,8 +171,11 @@ class RaplMeasurer:
 
         delta_uj = end_uj - start_uj
         if delta_uj < 0 and self._max_uj:
-            # Counter wrapped during the window — add one full range.
-            delta_uj += self._max_uj
+            # Counter wrapped during the window. Loop until non-negative
+            # in case it wrapped MULTIPLE times — on older CPUs with a
+            # ~4.3kJ range, sustained ~150W can wrap every ~28s.
+            while delta_uj < 0:
+                delta_uj += self._max_uj
         elif delta_uj < 0:
             # No bound info, can't correct safely; clamp to zero.
             delta_uj = 0
@@ -263,19 +266,28 @@ class SubprocessMeasurer:
     def measure(self, duration_seconds: float) -> MeasurementSample:
         if duration_seconds <= 0:
             raise ValueError("duration_seconds must be positive")
-        start_ts = int(self._clock())
         if self.cumulative:
+            # Capture start_ts AFTER the first _run() returns so the
+            # signed window reflects the physical measurement bounds
+            # (NOT the time we spent waiting on the subprocess). Without
+            # this, two back-to-back cumulative measurements can produce
+            # signed windows that overlap on disk even though physical
+            # readings are disjoint — triggering false-positive
+            # OverlapFraud reports.
             start_val = self._run()
+            start_ts = int(self._clock())
             self._sleep(duration_seconds)
+            end_ts = int(self._clock())
             end_val = self._run()
             kwh = max(0.0, end_val - start_val)
         else:
             # Instantaneous rate (kW); multiply by hours in window.
+            start_ts = int(self._clock())
             rate_kw = self._run()
             self._sleep(duration_seconds)
+            end_ts = int(self._clock())
             hours = duration_seconds / 3600
             kwh = max(0.0, rate_kw * hours)
-        end_ts = int(self._clock())
 
         return MeasurementSample(
             window_start=start_ts, window_end=end_ts, kwh=kwh,

@@ -6,9 +6,14 @@ past consumption claims, only emit corrections as new measurements.
 
 Tags for relay-side filtering:
   ["d",      measurement_id]            deterministic event identifier
-  ["p",      device_pubkey]             query by device
   ["source", source]                    query by measurer type
   ["window", start, end]                query by time range
+
+We deliberately do NOT emit a `["p", device_pubkey]` tag — per NIP-01
+"p" tags reference OTHER pubkeys (mentions/replies). The device is
+already queryable via the standard `authors` REQ filter on the event's
+pubkey field; a redundant p-tag pointing at self would confuse
+relays that interpret p-tag matches as "event mentions X".
 """
 
 from __future__ import annotations
@@ -33,7 +38,6 @@ def build_measurement_event(
     mid = measurement_id(signed.measurement)
     tags: list[list[str]] = [
         ["d", mid],
-        ["p", signed.measurement.device],
         ["source", signed.measurement.source],
         ["window",
          str(signed.measurement.window_start),

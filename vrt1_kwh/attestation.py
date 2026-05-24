@@ -73,12 +73,17 @@ class KwhMeasurement:
     v: int = 1
     nonce: str = ""
 
+    def __post_init__(self) -> None:
+        # Round kwh at construction so the in-memory dataclass field
+        # and the canonical payload always agree. Without this the
+        # aggregator can sum unrounded values that differ from the
+        # sum any external party would compute from the signed JSON.
+        object.__setattr__(self, "kwh", _round_kwh(self.kwh))
+
     def to_payload(self) -> dict[str, Any]:
         d = asdict(self)
         if not d["nonce"]:
             d.pop("nonce")
-        # Always round kwh to the deterministic precision before serializing.
-        d["kwh"] = _round_kwh(d["kwh"])
         return d
 
     def canonical_bytes(self) -> bytes:

@@ -177,10 +177,99 @@ def aggregate(
     *,
     min_gap_seconds: int = 60,
 ) -> AggregateReport:
-    """Full aggregation in one call. Iterates the corpus once where possible."""
+    """Full aggregation in one call. Verifies each signature ONCE.
+
+    `device_totals`, `coverage_gaps`, and `detect_overlap_fraud` each
+    re-verify when called individually, which is fine for small corpora
+    but quadratic-ish on large ones. This wrapper partitions the corpus
+    into valid + invalid up-front and short-circuits the per-subroutine
+    verification by passing pre-filtered slices into helper functions
+    that skip the sig check.
+    """
     corpus = list(corpus)
+    valid: list[SignedMeasurement] = []
+    invalid_by_device: dict[str, int] = {}
+    for sm in corpus:
+        if sm.verify():
+            valid.append(sm)
+        else:
+            invalid_by_device[sm.measurement.device] = (
+                invalid_by_device.get(sm.measurement.device, 0) + 1
+            )
     return AggregateReport(
-        totals=device_totals(corpus),
-        gaps=coverage_gaps(corpus, min_gap_seconds=min_gap_seconds),
-        overlaps=detect_overlap_fraud(corpus),
+        totals=_device_totals_prevalidated(valid, invalid_by_device),
+        gaps=_coverage_gaps_prevalidated(valid, min_gap_seconds=min_gap_seconds),
+        overlaps=_detect_overlap_fraud_prevalidated(valid),
     )
+
+
+def _device_totals_prevalidated(
+    valid: list[SignedMeasurement], invalid_by_device: dict[str, int],
+) -> dict[str, DeviceTotal]:
+    by_device: dict[str, list[SignedMeasurement]] = defaultdict(list)
+    for sm in valid:
+        by_device[sm.measurement.device].append(sm)
+    # Devices that ONLY have invalid sigs still need a row.
+    for dev in invalid_by_device:
+        by_device.setdefault(dev, [])
+
+    out: dict[str, DeviceTotal] = {}
+    for device, sms in by_device.items():
+        total = sum(sm.measurement.kwh for sm in sms)
+        first = min((sm.measurement.window_start for sm in sms), default=None)
+        last = max((sm.measurement.window_end for sm in sms), default=None)
+        out[device] = DeviceTotal(
+            device=device,
+            total_kwh=total,
+            measurement_count=len(sms),
+            invalid_count=invalid_by_device.get(device, 0),
+            first_window_start=first,
+            last_window_end=last,
+        )
+    return out
+
+
+def _coverage_gaps_prevalidated(
+    valid: list[SignedMeasurement], *, min_gap_seconds: int = 60,
+) -> list[CoverageGap]:
+    by_device: dict[str, list[SignedMeasurement]] = defaultdict(list)
+    for sm in valid:
+        by_device[sm.measurement.device].append(sm)
+    gaps: list[CoverageGap] = []
+    for device, sms in by_device.items():
+        sms.sort(key=lambda s: s.measurement.window_start)
+        for prev, curr in zip(sms, sms[1:]):
+            gap = curr.measurement.window_start - prev.measurement.window_end
+            if gap >= min_gap_seconds:
+                gaps.append(CoverageGap(
+                    device=device,
+                    gap_start=prev.measurement.window_end,
+                    gap_end=curr.measurement.window_start,
+                    duration_seconds=gap,
+                ))
+    return gaps
+
+
+def _detect_overlap_fraud_prevalidated(
+    valid: list[SignedMeasurement],
+) -> list[OverlapFraud]:
+    by_device: dict[str, list[SignedMeasurement]] = defaultdict(list)
+    for sm in valid:
+        by_device[sm.measurement.device].append(sm)
+    fraud: list[OverlapFraud] = []
+    for device, sms in by_device.items():
+        sms.sort(key=lambda s: s.measurement.window_start)
+        for i, a in enumerate(sms):
+            a_end = a.measurement.window_end
+            for b in sms[i + 1:]:
+                if b.measurement.window_start >= a_end:
+                    break
+                overlap = a_end - b.measurement.window_start
+                if overlap > 0:
+                    fraud.append(OverlapFraud(
+                        device=device,
+                        a_id=a.id,
+                        b_id=b.id,
+                        overlap_seconds=overlap,
+                    ))
+    return fraud

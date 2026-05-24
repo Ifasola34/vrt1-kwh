@@ -37,12 +37,14 @@ def test_event_roundtrip_preserves_signed_measurement():
     assert decoded.verify()
 
 
-def test_event_tags_include_d_p_source_window():
+def test_event_tags_include_d_source_window_no_p():
     k = OracleKey.generate()
     signed = _signed(k)
     evt = build_measurement_event(signed, k)
     tag_keys = {t[0] for t in evt.tags}
-    assert {"d", "p", "source", "window"}.issubset(tag_keys)
+    assert {"d", "source", "window"}.issubset(tag_keys)
+    # No self-pointing p-tag (NIP-01 reserves p for OTHER pubkeys).
+    assert "p" not in tag_keys
     # Window tag carries start and end as strings.
     win = next(t for t in evt.tags if t[0] == "window")
     assert win[1:] == ["1700000000", "1700000030"]

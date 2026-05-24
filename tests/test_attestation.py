@@ -73,6 +73,21 @@ def test_kwh_is_rounded_to_9_decimals_before_signing():
     assert measurement_digest(m_a) == measurement_digest(m_b)
 
 
+def test_in_memory_kwh_matches_canonical_payload():
+    """Regression: round-2 review caught that the in-memory dataclass
+    field used to be the UNROUNDED value while to_payload() returned
+    a rounded one. Aggregator sums of .kwh would then differ from sums
+    a third party would compute from the signed JSON. Verify the
+    dataclass holds the canonical (rounded) value."""
+    k = OracleKey.generate()
+    m = make_measurement(
+        device_pubkey_hex=k.xonly_pubkey_hex,
+        sample=_sample(kwh=0.0000000019999),   # rounds to 0.000000002
+    )
+    assert m.kwh == m.to_payload()["kwh"]
+    assert m.kwh == 0.000000002
+
+
 def test_measurement_id_is_deterministic():
     k = OracleKey.generate()
     m1 = make_measurement(device_pubkey_hex=k.xonly_pubkey_hex, sample=_sample())

@@ -147,8 +147,25 @@ def test_aggregate_surfaces_overlap_fraud(tmp_path: Path):
     (corpus / "02.json").write_text(_sm(k, kwh=0.001, start=200, end=400).to_json())
     runner = CliRunner()
     r = runner.invoke(cli, ["aggregate", "--corpus", str(corpus)])
-    assert r.exit_code == 0
+    # Exit 2 = overlap fraud (gated for CI / scripts).
+    assert r.exit_code == 2
     assert "OVERLAP FRAUD" in r.output
+
+
+def test_aggregate_exits_3_on_invalid_signature(tmp_path: Path):
+    k = OracleKey.generate()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "01.json").write_text(_sm(k, kwh=0.001, start=100, end=200).to_json())
+    # A measurement whose signature is corrupted post-sign.
+    bad = _sm(k, kwh=0.002, start=300, end=400)
+    bad_body = json.loads(bad.to_json())
+    bad_body["measurement"]["kwh"] = 999.0
+    (corpus / "02_bad.json").write_text(json.dumps(bad_body))
+    runner = CliRunner()
+    r = runner.invoke(cli, ["aggregate", "--corpus", str(corpus)])
+    # Exit 3 = invalid sigs present (no overlap fraud here).
+    assert r.exit_code == 3
 
 
 def test_aggregate_errors_on_empty_dir(tmp_path: Path):

@@ -254,6 +254,14 @@ def aggregate_cmd(corpus: str, device: str | None, min_gap_seconds: int) -> None
     else:
         console.print("[green]no overlap fraud detected[/green]")
 
+    # Exit non-zero on any finding worth gating CI/scripts on:
+    #   2 = overlap fraud detected (physical impossibility)
+    #   3 = invalid-signature measurements present
+    if report.overlaps:
+        sys.exit(2)
+    if any(dt.invalid_count > 0 for dt in report.totals.values()):
+        sys.exit(3)
+
 
 def main() -> None:
     cli()
