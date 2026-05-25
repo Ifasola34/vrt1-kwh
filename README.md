@@ -1,5 +1,9 @@
 # vrt1-kwh
 
+[![CI](https://github.com/Ifasola34/vrt1-kwh/actions/workflows/ci.yml/badge.svg)](https://github.com/Ifasola34/vrt1-kwh/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
 **Signed kWh (energy consumption) attestations for the [VERITAS](https://github.com/Ifasola34/veritas) (VRT1) protocol.**
 
 Devices measure their own power consumption, sign each measurement with a BIP-340 Schnorr key, and publish cryptographically verifiable, peer-aggregatable records of how much energy they used in which window. The substrate for proof-of-energy systems, Bitcoin mining attestation, IoT power telemetry, carbon-credit primitives, and agent compute receipts.
