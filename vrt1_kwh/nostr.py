@@ -55,7 +55,15 @@ def build_measurement_event(
 
 
 def decode_measurement_event(evt: NostrEvent) -> SignedMeasurement:
-    """Inverse of build_measurement_event. Raises on malformed input."""
+    """Inverse of build_measurement_event. Raises on malformed input.
+
+    Contract: validates the event kind but does NOT verify either
+    signature. Callers needing authenticity MUST call ``.verify()`` on the
+    returned SignedMeasurement (and ``evt.verify()`` if they also rely on
+    the Nostr wrapper's authorship claim). Mirrors veritas'
+    ``decode_attestation_event``; vrt1-agents' ``decode_action_event``
+    verifies by default instead.
+    """
     if evt.kind != KIND_KWH_MEASUREMENT:
         raise ValueError(
             f"expected kind {KIND_KWH_MEASUREMENT}, got {evt.kind}"

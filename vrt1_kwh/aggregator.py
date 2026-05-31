@@ -42,6 +42,29 @@ class DeviceTotal:
     last_window_end: int | None
 
 
+def _partition(
+    corpus: Iterable[SignedMeasurement],
+) -> tuple[list[SignedMeasurement], dict[str, int]]:
+    """Split a corpus into valid-signature measurements and a per-device
+    count of the invalid-signature ones. Verifies each measurement exactly
+    once.
+
+    Every public entry point funnels through here, so signature
+    verification — the expensive step — happens in exactly one place and
+    the totals / gaps / fraud logic below never has to re-verify.
+    """
+    valid: list[SignedMeasurement] = []
+    invalid_by_device: dict[str, int] = {}
+    for sm in corpus:
+        if sm.verify():
+            valid.append(sm)
+        else:
+            invalid_by_device[sm.measurement.device] = (
+                invalid_by_device.get(sm.measurement.device, 0) + 1
+            )
+    return valid, invalid_by_device
+
+
 def device_totals(
     corpus: Iterable[SignedMeasurement],
 ) -> dict[str, DeviceTotal]:
@@ -51,26 +74,8 @@ def device_totals(
     (including devices whose measurements were all invalid — caller
     can tell from invalid_count > 0 and measurement_count == 0).
     """
-    by_device: dict[str, list[SignedMeasurement]] = defaultdict(list)
-    for sm in corpus:
-        by_device[sm.measurement.device].append(sm)
-
-    out: dict[str, DeviceTotal] = {}
-    for device, sms in by_device.items():
-        valid = [sm for sm in sms if sm.verify()]
-        invalid_count = len(sms) - len(valid)
-        total = sum(sm.measurement.kwh for sm in valid)
-        first = min((sm.measurement.window_start for sm in valid), default=None)
-        last = max((sm.measurement.window_end for sm in valid), default=None)
-        out[device] = DeviceTotal(
-            device=device,
-            total_kwh=total,
-            measurement_count=len(valid),
-            invalid_count=invalid_count,
-            first_window_start=first,
-            last_window_end=last,
-        )
-    return out
+    valid, invalid_by_device = _partition(corpus)
+    return _device_totals_prevalidated(valid, invalid_by_device)
 
 
 @dataclass
@@ -91,24 +96,8 @@ def coverage_gaps(
     Reports gaps where window_n.end < window_{n+1}.start by at least
     `min_gap_seconds`. Useful for "when was the oracle silent?" audits.
     """
-    by_device: dict[str, list[SignedMeasurement]] = defaultdict(list)
-    for sm in corpus:
-        if sm.verify():
-            by_device[sm.measurement.device].append(sm)
-
-    gaps: list[CoverageGap] = []
-    for device, sms in by_device.items():
-        sms.sort(key=lambda s: s.measurement.window_start)
-        for prev, curr in zip(sms, sms[1:]):
-            gap = curr.measurement.window_start - prev.measurement.window_end
-            if gap >= min_gap_seconds:
-                gaps.append(CoverageGap(
-                    device=device,
-                    gap_start=prev.measurement.window_end,
-                    gap_end=curr.measurement.window_start,
-                    duration_seconds=gap,
-                ))
-    return gaps
+    valid, _ = _partition(corpus)
+    return _coverage_gaps_prevalidated(valid, min_gap_seconds=min_gap_seconds)
 
 
 @dataclass
@@ -132,32 +121,8 @@ def detect_overlap_fraud(
 
     Either way the consumer should refuse to count both.
     """
-    by_device: dict[str, list[SignedMeasurement]] = defaultdict(list)
-    for sm in corpus:
-        if sm.verify():
-            by_device[sm.measurement.device].append(sm)
-
-    fraud: list[OverlapFraud] = []
-    for device, sms in by_device.items():
-        sms.sort(key=lambda s: s.measurement.window_start)
-        # Sweep: for each measurement, find any LATER one whose start
-        # is before this one's end. O(n^2) worst case but realistic
-        # data is sparse — a 24h corpus at one measurement per 5min is
-        # 288 entries; the sweep is microseconds.
-        for i, a in enumerate(sms):
-            a_end = a.measurement.window_end
-            for b in sms[i + 1:]:
-                if b.measurement.window_start >= a_end:
-                    break  # sorted by start, so no further overlap possible
-                overlap = a_end - b.measurement.window_start
-                if overlap > 0:
-                    fraud.append(OverlapFraud(
-                        device=device,
-                        a_id=a.id,
-                        b_id=b.id,
-                        overlap_seconds=overlap,
-                    ))
-    return fraud
+    valid, _ = _partition(corpus)
+    return _detect_overlap_fraud_prevalidated(valid)
 
 
 @dataclass
@@ -179,23 +144,13 @@ def aggregate(
 ) -> AggregateReport:
     """Full aggregation in one call. Verifies each signature ONCE.
 
-    `device_totals`, `coverage_gaps`, and `detect_overlap_fraud` each
-    re-verify when called individually, which is fine for small corpora
-    but quadratic-ish on large ones. This wrapper partitions the corpus
-    into valid + invalid up-front and short-circuits the per-subroutine
-    verification by passing pre-filtered slices into helper functions
-    that skip the sig check.
+    Calling `device_totals`, `coverage_gaps`, and `detect_overlap_fraud`
+    separately would re-verify the whole corpus three times — fine for
+    small inputs, wasteful on large ones. This wrapper partitions once up
+    front and feeds the pre-validated slices to the same shared helpers
+    the individual functions use.
     """
-    corpus = list(corpus)
-    valid: list[SignedMeasurement] = []
-    invalid_by_device: dict[str, int] = {}
-    for sm in corpus:
-        if sm.verify():
-            valid.append(sm)
-        else:
-            invalid_by_device[sm.measurement.device] = (
-                invalid_by_device.get(sm.measurement.device, 0) + 1
-            )
+    valid, invalid_by_device = _partition(corpus)
     return AggregateReport(
         totals=_device_totals_prevalidated(valid, invalid_by_device),
         gaps=_coverage_gaps_prevalidated(valid, min_gap_seconds=min_gap_seconds),
@@ -259,6 +214,11 @@ def _detect_overlap_fraud_prevalidated(
     fraud: list[OverlapFraud] = []
     for device, sms in by_device.items():
         sms.sort(key=lambda s: s.measurement.window_start)
+        # Sweep: for each measurement, find any LATER one whose start is
+        # before this one's end. O(n^2) worst case, but realistic data is
+        # sparse and the early `break` (windows are sorted by start) keeps
+        # the sweep near-linear — a 24h corpus at one reading per 5min is
+        # only 288 entries.
         for i, a in enumerate(sms):
             a_end = a.measurement.window_end
             for b in sms[i + 1:]:

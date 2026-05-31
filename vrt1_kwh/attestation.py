@@ -26,6 +26,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from veritas.attestation import canonical_json
 from veritas.crypto import (
     OracleKey,
     schnorr_sign,
@@ -38,18 +39,11 @@ from .measurer import MeasurementSample
 
 KWH_TAG = "VRT1/kwh"
 
-
-def canonical_json(obj: Any) -> bytes:
-    """Stable byte encoding — sorted keys, no whitespace.
-
-    Floats are serialized with Python's repr, which is round-trippable
-    but platform-dependent in edge cases. For interop across machines,
-    callers should round/quantize kwh to a fixed precision before signing
-    (the oracle layer does this — see DEFAULT_KWH_PRECISION).
-    """
-    return json.dumps(
-        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-    ).encode("utf-8")
+# canonical_json is imported from veritas — the single source of truth for the
+# exact bytes we hash and sign. kWh values are floats and JSON float repr can
+# vary across platforms in edge cases, so we quantize to DEFAULT_KWH_PRECISION
+# before signing (see below); that quantization, not the encoder, is what makes
+# a measurement sign identically on any machine.
 
 
 # Round to 9 decimal places before signing so the same physical
@@ -93,7 +87,7 @@ class KwhMeasurement:
         # and the canonical payload always agree. Without this the
         # aggregator can sum unrounded values that differ from the
         # sum any external party would compute from the signed JSON.
-        object.__setattr__(self, "kwh", _round_kwh(self.kwh))
+        self.kwh = _round_kwh(self.kwh)
 
     def to_payload(self) -> dict[str, Any]:
         d = asdict(self)
